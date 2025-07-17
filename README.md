@@ -5,7 +5,7 @@
 ## Features
 
 - `/startserver`, `/stopserver`, `/restartserver`, `/roundrestart`, `/restartnextround`, `/softrestart`
-- `/setserverstate <private|public>` to toggle server visibility
+- `/setserverstate <private|public>` to toggle server visibility (server must be verified)
 - `/onlineplayers` lists active players
 - `/fetchlogs` retrieves recent server console logs
 - `/console <command>` executes admin console commands in tmux
