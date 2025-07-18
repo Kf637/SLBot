@@ -47,6 +47,11 @@
    GUILD_ID=YOUR_DISCORD_SERVER_ID
    WEBHOOK_URL=YOUR_WEBHOOK_URL  # optional
    ```
+   **Note:** If `DISABLE_CONSOLE` or `DISABLE_FETCHLOGS` are not defined in your `.env`, those commands will be disabled by default. To enable them, add the following lines to your environment file:
+   ```ini
+   DISABLE_CONSOLE=false
+   DISABLE_FETCHLOGS=false
+   ```
 2. Update `permission.json` with the Discord role IDs authorized for each command. Example:
    ```json
    {
