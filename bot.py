@@ -11,6 +11,8 @@ import requests
 from datetime import datetime, timezone
 import discord.ui
 import json
+import sys
+import logging
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -19,11 +21,48 @@ GUILD_ID = os.getenv('GUILD_ID')
 GUILD = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 restart_in_progress = False  # Prevent overlapping restarts
+# Feature flags: commands disabled by default unless explicitly set to 'false'
+disable_console = os.getenv('DISABLE_CONSOLE', 'true') == 'true'
+disable_fetchlogs = os.getenv('DISABLE_FETCHLOGS', 'true') == 'true'
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
 
+# configure logging to match discord.py style and ensure early messages appear
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
+    force=True
+)
+logger = logging.getLogger(__name__)
+# Prevent duplicate logs from discord.py by clearing its default handlers
+logging.getLogger('discord').handlers.clear()
+
+# Validate required environment variables
+_required = {
+    "DISCORD_TOKEN": TOKEN,
+    "GUILD_ID":       GUILD_ID,
+}
+_missing = [name for name, val in _required.items() if not val]
+if _missing:
+    logger.error("Missing required environment variable(s): %s", ", ".join(_missing))
+    sys.exit(1)
+
+# Warn about disabled or unset optional features
+if not WEBHOOK_URL:
+    logger.warning("WEBHOOK_URL not set; command logging disabled.")
+
+# Log feature flag states
+if disable_console:
+    logger.info("Console command is disabled.")
+else:
+    logger.info("Console command is enabled.")
+
+if disable_fetchlogs:
+    logger.info("Fetchlog command is disabled.")
+else:
+    logger.info("Fetchlog command is enabled.")
 
 
 try:
@@ -90,8 +129,8 @@ async def log_command(interaction: discord.Interaction):
     data = interaction.data if isinstance(interaction.data, dict) else {}
     if getattr(interaction, 'command', None) and getattr(interaction.command, 'name', None):
         cmd_name = interaction.command.name
-    elif getattr(interaction.message, 'interaction', None) and getattr(interaction.message.interaction, 'name', None):
-        cmd_name = interaction.message.interaction.name
+    elif getattr(interaction.message, 'interaction_metadata', None) and getattr(interaction.message.interaction_metadata, 'name', None):
+        cmd_name = interaction.message.interaction_metadata.name
     else:
         cmd_name = data.get('custom_id') or data.get('name') or 'unknown'
     # Determine user roles that match configured permissions for this command
@@ -126,7 +165,7 @@ async def log_denied(interaction: discord.Interaction):
     else:
         cmd_name = data.get('name') or data.get('custom_id')
         if not cmd_name:
-            orig = getattr(interaction.message, 'interaction', None)
+            orig = getattr(interaction.message, 'interaction_metadata', None)
             cmd_name = getattr(orig, 'name', None)
         if not cmd_name:
             cmd_name = 'unknown'
@@ -177,41 +216,37 @@ async def help_command(interaction: discord.Interaction):
     member = interaction.user
     # Permission check via JSON permissions
     if not has_permission(member, interaction.command.name):
-        await log_denied(interaction)
         await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
-    await log_command(interaction)
     # Define embed pages
     page1_desc = (
         "**Available Commands:**\n"
         "/restartserver - Restarts the SCP:SL server\n"
         "/startserver - Starts the SCP:SL server\n"
         "/stopserver - Stops the SCP:SL server\n"
-        "/setserverstate <private|public> - Set server mode\n"
+        "/setserverstate <private|public> - Set server mode (Server must be verified by Northwood, this removes or readds the server to the list)\n"
         "/restartnextround - Restarts after current round finishes\n"
         "/roundrestart - Restarts the current round immediately\n"
         "/softrestart - Soft restart with reconnect notice\n"
         "/fetchlogs - Fetch server console logs\n"
         "/onlineplayers - List online players currently connected\n"
-        "/console <command> - Run a console command on the server (admin only)\n"
-        "/help - Show this help message"
+        "/console <command> - Run a console command on the server\n"
+        "/help - Show this help menu"
     )
     page2_desc = (
-        "**Credits:**\n"
-        "• Developer: Kf637\n"
-        "• Libraries: discord.py, python-dotenv, requests\n"
-        "• Server control via tmux and subprocess\n"
-    )
-    # Third page: use case description
-    page3_desc = (
-        "**Info:**\n"
         "This bot allows authorized users to control an SCP:SL server directly from Discord.\n"
         "This bot works by sending commands into the tmux session with the name `scpsl` and capturing the output.\n"
         "Logs and outputs are sent back as messages or files."
     )
+    page3_desc = (
+        "• Developer: Kf637\n"
+        "• Libraries: discord.py, python-dotenv, requests\n"
+        "• Server control via tmux and subprocess\n"
+        "• Source Code: [GitHub Repository](https://github.com/Kf637/SLBot)\n"
+    )
     embed1 = discord.Embed(title="Commands", description=page1_desc, color=0x00ff00)
-    embed2 = discord.Embed(title="Credits", description=page2_desc, color=0x00ff00)
-    embed3 = discord.Embed(title="Info", description=page3_desc, color=0x00ff00)
+    embed2 = discord.Embed(title="Info", description=page2_desc, color=0x00ff00)
+    embed3 = discord.Embed(title="Credits", description=page3_desc, color=0x00ff00)
     pages = [embed1, embed2, embed3]
     # Paginated view
     class HelpView(discord.ui.View):
@@ -244,7 +279,7 @@ async def help_command(interaction: discord.Interaction):
 
     view = HelpView(interaction.user.id)
     # send initial embed page
-    await interaction.response.send_message(embed=pages[0], view=view)
+    await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
 
 """Restart server command"""
 @tree.command(name='restartserver', description='Restarts the SCP:SL server')
@@ -647,11 +682,16 @@ async def softrestart(interaction: discord.Interaction):
 async def fetchlogs(interaction: discord.Interaction):
     """Fetch last 2000 characters inline and upload last 10000 characters as a TXT file (ephemeral)."""
     member = interaction.user
+    # If fetchlogs commands are globally disabled, treat as disabled
+    if disable_fetchlogs:
+        await interaction.response.send_message("This command has been disabled by the system administrator.", ephemeral=True)
+        return
     # Permission check
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
         await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
+    await log_command(interaction)
     # Verify tmux session exists
     has_res = await asyncio.to_thread(
         subprocess.run,
@@ -785,9 +825,13 @@ async def onlineplayers(interaction: discord.Interaction):
 @app_commands.describe(command='The console command to run')
 async def console(interaction: discord.Interaction, command: str):
     member = interaction.user
+    # If console commands are globally disabled, treat as disabled
+    if disable_console:
+        await interaction.response.send_message("This command has been disabled by the system administrator.", ephemeral=True)
+        return
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     # Ask for confirmation with buttons
     class RunConsoleView(discord.ui.View):
