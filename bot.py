@@ -298,74 +298,52 @@ async def restartserver(interaction: discord.Interaction):
     restart_in_progress = True
     try:
         await log_command(interaction)
-        # Defer response to allow processing
         await interaction.response.defer(thinking=True)
-        # Ensure SCPSL process is running before attempting restart
+        # Step 1: Check if server process is running
+        await interaction.edit_original_response(content="Checking if SCP:SL Server is running")
         if not is_scpsl_process_running():
-            await interaction.followup.send("No server process found (SCPSL.x86_64); nothing to restart.")
-            return
-        print(f"[DEBUG] User {member} ({member.id}) invoked restartserver")
-        # Pre-check: is any process using port 7777?
-        pre_res = await asyncio.to_thread(
-            subprocess.run,
-            "ss -tuln | grep -q ':7777'",
-            shell=True
-        )
-        if pre_res.returncode != 0:
-            print("[DEBUG] No process bound to port 7777, nothing to restart.")
-            await interaction.followup.send("No server detected on port 7777; nothing to restart.")
+            await interaction.edit_original_response(content="No server process found; nothing to restart.")
             restart_in_progress = False
             return
-        # Graceful shutdown: send 'exit' to tmux session
-        print("[DEBUG] Sending 'exit' to tmux session 'scpsl'")
-        await asyncio.to_thread(subprocess.run, ["tmux", "send-keys", "-t", "scpsl", "exit", "Enter"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # Check if session still exists
-        has_res = await asyncio.to_thread(subprocess.run, ["tmux", "has-session", "-t", "scpsl"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if has_res.returncode == 0:
-            print("[DEBUG] Session still active; force killing tmux session 'scpsl'")
-            kill_res = await asyncio.to_thread(subprocess.run, ["tmux", "kill-session", "-t", "scpsl"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            print(f"[DEBUG] kill-session stdout: '{kill_res.stdout.decode().strip()}', stderr: '{kill_res.stderr.decode().strip()}'")
-        else:
-            print("[DEBUG] Session exited cleanly after 'exit' command")
-        # Start new tmux session with server: cd into directory then execute
-        print("[DEBUG] Starting new tmux session 'scpsl'")
-        start_res = await asyncio.to_thread(
-            subprocess.run,
-            [
-                "tmux", "new-session", "-d", "-s", "scpsl",
-                "bash", "-c",
-                "cd /home/steam/steamcmd/scpsl && ./LocalAdmin 7777"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        print(f"[DEBUG] new-session stdout: '{start_res.stdout.decode().strip()}', stderr: '{start_res.stderr.decode().strip()}'")
-        # Wait up to 60 seconds for the server to bind port 7777
-        print("[DEBUG] Waiting up to 60s for port 7777 to bind")
-        bound = False
-        for i in range(60):
-            print(f"[DEBUG] Check attempt {i+1}")
-            grep_res = await asyncio.to_thread(
-                subprocess.run,
-                "ss -tuln | grep -q ':7777'",
-                shell=True
-            )
-            if grep_res.returncode == 0:
-                bound = True
-                print(f"[DEBUG] Port 7777 bound on attempt {i+1}")
+        # Step 2: Attempt shutdown
+        await interaction.edit_original_response(content="Attempting to shutdown SCP:SL")
+        await asyncio.to_thread(subprocess.run, ["tmux", "send-keys", "-t", "scpsl", "exit", "Enter"])
+        for _ in range(10):
+            if not is_scpsl_process_running():
                 break
             await asyncio.sleep(1)
+        # Step 3: Starting server
+        await interaction.edit_original_response(content="Starting SCP:SL Server")
+        await asyncio.to_thread(
+            subprocess.run,
+            ["tmux", "new-session", "-d", "-s", "scpsl", "bash", "-c", "cd /home/steam/steamcmd/scpsl && ./LocalAdmin 7777"]
+        )
+        # Step 4: Poll for readiness
+        await interaction.edit_original_response(content="Checking if SCP:SL Server is running")
+        bound = False
+        for _ in range(60):
+            if is_scpsl_process_running():
+                res = await asyncio.to_thread(
+                    subprocess.run,
+                    "ss -tuln | grep -q ':7777'",
+                    shell=True
+                )
+                if res.returncode == 0:
+                    bound = True
+                    break
+            await asyncio.sleep(1)
         if bound:
-            print("[DEBUG] Port 7777 is bound, server restart succeeded")
-            await interaction.followup.send("Server restarted successfully: port 7777 is bound.")
+            await interaction.edit_original_response(content="Server started successfully.")
+            print("[DEBUG] Server started successfully: port 7777 is bound.")
         else:
-            print("[DEBUG] Port 7777 did not bind after 60s timeout")
-            await interaction.followup.send("Server restart timed out: port 7777 not bound after 60 seconds.")
+            await interaction.edit_original_response(content="Server restart timed out, something went wrong. Please check the server logs.")
+            print("[DEBUG] Server restart timed out: port 7777 not bound after 60 seconds.")
     except Exception as e:
         import traceback
         traceback.print_exception(type(e), e, e.__traceback__)
         try:
             await interaction.followup.send(f"Error during restart: {e}")
+            print(f"[ERROR] Exception during restart: {e}")
         except Exception:
             pass
     finally:
