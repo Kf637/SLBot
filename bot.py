@@ -905,6 +905,16 @@ async def systemreboot(interaction: discord.Interaction):
         await log_denied(interaction)
         await interaction.response.send_message("You don't have permission to use this command.")
         return
+
+    # Check if bot has sudo permissions
+    if not os.access('/usr/bin/sudo', os.X_OK):
+        await interaction.response.send_message(
+            "An error occurred. Please contact the server administrator.",
+            ephemeral=True
+        )
+        logging.error("System reboot command failed: bot does not have sudo permissions.")
+        return
+
     # Confirmation view
     class SystemRebootView(discord.ui.View):
         def __init__(self, author_id):
