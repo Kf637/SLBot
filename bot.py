@@ -24,6 +24,7 @@ restart_in_progress = False  # Prevent overlapping restarts
 # Feature flags: commands disabled by default unless explicitly set to 'false'
 disable_console = os.getenv('DISABLE_CONSOLE', 'true') == 'true'
 disable_fetchlogs = os.getenv('DISABLE_FETCHLOGS', 'true') == 'true'
+disable_commands_usage_logging = os.getenv('DISABLE_COMMANDS_USAGE_LOGGING', 'true') == 'true'
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -35,9 +36,32 @@ logging.basicConfig(
     format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
     force=True
 )
+ # Logger for this module
 logger = logging.getLogger(__name__)
+# Setup commands usage logging if not disabled
+if not disable_commands_usage_logging:
+    # Define command usage log file path in script directory
+    log_file_path = os.path.join(os.path.dirname(__file__), 'commandsusage.log')
+    # Ensure command usage log file exists
+    if not os.path.exists(log_file_path):
+        with open(log_file_path, 'w') as f:
+            f.write("")
+    # Add file handler for command usage logging
+    file_handler = logging.FileHandler(log_file_path)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] %(name)s: %(message)s'))
+    # Attach to root logger so all info logs go to file
+    logging.getLogger().addHandler(file_handler)
+else:
+    logger.info('Commands usage logging is disabled.')
 # Prevent duplicate logs from discord.py by clearing its default handlers
-logging.getLogger('discord').handlers.clear()
+discord_logger = logging.getLogger('discord')
+discord_logger.handlers.clear()
+# Raise discord logger level to WARNING to avoid duplicate INFO messages
+discord_logger.setLevel(logging.WARNING)
+# Prevent discord logger messages from propagating to root logger
+discord_logger.propagate = False
+
 
 # Validate required environment variables
 _required = {
@@ -152,6 +176,8 @@ async def log_command(interaction: discord.Interaction):
         await asyncio.to_thread(requests.post, WEBHOOK_URL, json=payload)
     except Exception as e:
         print(f"Failed to send command log webhook: {e}")
+    # Also log to file
+    logger.info("Command used: %s by %s (%s); Roles: %s", cmd_name, user.name, user.id, role_str)
 async def log_denied(interaction: discord.Interaction):
     """Log unauthorized attempts to webhook"""
     if not WEBHOOK_URL:
