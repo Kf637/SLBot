@@ -37,7 +37,7 @@
 
 ## Configuration
 
-1. Copy the example environment file and fill in your credentials:
+1. Copy the environment file and fill in your credentials:
    ```bash
    cp .env .env.local
    ```
@@ -46,12 +46,14 @@
    DISCORD_TOKEN=YOUR_DISCORD_BOT_TOKEN
    GUILD_ID=YOUR_DISCORD_SERVER_ID
    WEBHOOK_URL=YOUR_WEBHOOK_URL  # optional
-   ```
-   **Note:** If `DISABLE_CONSOLE` or `DISABLE_FETCHLOGS` are not defined in your `.env`, those commands will be disabled by default. To enable them, add the following lines to your environment file:
-   ```ini
    DISABLE_CONSOLE=false
    DISABLE_FETCHLOGS=false
+   DISABLE_CONSOLE=false
+   DISABLE_FETCHLOGS=false
+   DISABLE_COMMANDS_USAGE_LOGGING=false
    ```
+   **Note:** If `DISABLE_CONSOLE` or `DISABLE_FETCHLOGS` are not defined in your `.env`, those commands will be disabled by default. To enable them, add the following lines to your environment file:
+
 2. Update `permission.json` with the Discord role IDs authorized for each command. Example:
    ```json
    {
