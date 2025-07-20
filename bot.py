@@ -289,7 +289,7 @@ async def restartserver(interaction: discord.Interaction):
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     global restart_in_progress
     if restart_in_progress:
@@ -313,6 +313,7 @@ async def restartserver(interaction: discord.Interaction):
                 break
             await asyncio.sleep(1)
         # Step 3: Starting server
+        await asyncio.sleep(3)
         await interaction.edit_original_response(content="Starting SCP:SL Server")
         await asyncio.to_thread(
             subprocess.run,
@@ -357,12 +358,12 @@ async def startserver(interaction: discord.Interaction):
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     await log_command(interaction)
     # Prevent starting if server process already running
     if is_scpsl_process_running():
-        await interaction.response.send_message("Server is already running; please stop or restart instead.")
+        await interaction.response.send_message("Server is already running; please stop or restart instead.", ephemeral=True)
         return
     # Acknowledge command and allow processing
     await interaction.response.send_message("Starting server, please wait...")
@@ -410,7 +411,7 @@ async def stopserver(interaction: discord.Interaction):
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     await log_command(interaction)
     # Acknowledge command and allow processing
@@ -476,7 +477,7 @@ async def setserverstate(interaction: discord.Interaction, state: app_commands.C
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     await log_command(interaction)
     # Verify server session exists
@@ -541,7 +542,7 @@ async def restartnextround(interaction: discord.Interaction):
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     await log_command(interaction)
     # Verify server session exists
@@ -581,7 +582,7 @@ async def roundrestart(interaction: discord.Interaction):
     # Permission check
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
-        await interaction.response.send_message("You don't have permission to use this command.")
+        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         return
     await log_command(interaction)
     # Verify server session exists
@@ -829,7 +830,7 @@ async def console(interaction: discord.Interaction, command: str):
             before_lines = before.stdout.decode().replace('\r', '').splitlines()
             # execute command
             await asyncio.to_thread(subprocess.run, ["tmux", "send-keys", "-t", "scpsl", self.cmd, "Enter"])
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             # capture output after
             after = await asyncio.to_thread(subprocess.run,
                 ["tmux", "capture-pane", "-pt", "scpsl", "-S", "-1000", "-J"],
