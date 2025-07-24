@@ -22,7 +22,7 @@
 
 1. Clone or copy the repository:
    ```bash
-   git clone https://github.com/your-repo/SLBot.git
+   git clone https://github.com/Kf637/SLBot.git
    cd SLBot
    ```
 2. Create a virtual environment (recommended):
