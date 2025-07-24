@@ -145,11 +145,14 @@ def is_scpsl_process_running() -> bool:
 
 
 async def log_command(interaction: discord.Interaction):
-    """Log command usage to webhook"""
+    """Log slash command usage to webhook"""
+    # Only log slash commands (ignore component interactions)
+    if not getattr(interaction, 'command', None) or not getattr(interaction.command, 'name', None):
+        return
     if not WEBHOOK_URL:
         return
     user = interaction.user
-    # Extract command name: slash command > original interaction > component custom_id
+    # Extract command name: slash command preferred, fallback to original interaction metadata
     data = interaction.data if isinstance(interaction.data, dict) else {}
     if getattr(interaction, 'command', None) and getattr(interaction.command, 'name', None):
         cmd_name = interaction.command.name
@@ -927,18 +930,18 @@ async def systemreboot(interaction: discord.Interaction):
                 await button_interaction.response.send_message("This button isn't for you.")
                 return
             # Step 1: Check server
-            await log_command(interaction)
+            await log_command(button_interaction)
             await button_interaction.response.edit_message(content="Checking if SCP:SL is running...", view=None)
             if is_scpsl_process_running():
-                await button_interaction.edit_original_response(content="Attempting to shutdown SCP:SL")
+                await button_interaction.response.edit_message(content="Attempting to shutdown SCP:SL", view=None)
                 await asyncio.to_thread(subprocess.run, ["tmux", "send-keys", "-t", "scpsl", "exit", "Enter"] )
                 await asyncio.sleep(10)
                 if is_scpsl_process_running():
-                    await button_interaction.edit_original_response(content="Failed to shutdown SCP:SL")
+                    await button_interaction.response.edit_message(content="Failed to shutdown SCP:SL", view=None)
                     return
             # Step 2: Reboot
             await asyncio.sleep(3)
-            await button_interaction.edit_original_response(content="Rebooting system, SCP:SL does not autostart")
+            await button_interaction.response.edit_message(content="Rebooting system, SCP:SL does not autostart", view=None)
             # Make bot appear offline before reboot
             await button_interaction.client.change_presence(status=discord.Status.invisible)
             await asyncio.to_thread(subprocess.run, ["sudo", "reboot"] )
