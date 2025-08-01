@@ -13,6 +13,7 @@ import discord.ui
 import json
 import sys
 import logging
+import tempfile  # for creating temporary log file
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -395,7 +396,7 @@ async def startserver(interaction: discord.Interaction):
         await interaction.response.send_message("Server is already running; please stop or restart instead.", ephemeral=True)
         return
     # Acknowledge command and allow processing
-    await interaction.response.send_message("Starting server, please wait...")
+    await interaction.response.send_message("Starting server, please wait...", ephemeral=True)
     print(f"[DEBUG] User {member} ({member.id}) invoked startserver")
     # Start new tmux session with server: cd into directory then execute
     print("[DEBUG] Starting new tmux session 'scpsl'")
@@ -444,7 +445,7 @@ async def stopserver(interaction: discord.Interaction):
         return
     await log_command(interaction)
     # Acknowledge command and allow processing
-    await interaction.response.send_message("Stopping server, please wait...")
+    await interaction.response.send_message("Stopping server, please wait...", ephemeral=True)
     print(f"[DEBUG] User {member} ({member.id}) invoked stopserver")
     # Graceful shutdown: send 'exit' to tmux session
     print("[DEBUG] Sending 'exit' to tmux session 'scpsl'")
@@ -474,25 +475,21 @@ async def stopserver(interaction: discord.Interaction):
         print(f"[DEBUG] kill-session stdout: '{kill_res.stdout.decode().strip()}', stderr: '{kill_res.stderr.decode().strip()}'")
     else:
         print("[DEBUG] Session exited cleanly after 'exit' command")
-    # Wait up to 60 seconds for port 7777 to be free
-    print("[DEBUG] Waiting up to 60s for port 7777 to free")
+    # Wait up to 60 seconds for server process to exit
+    print("[DEBUG] Waiting up to 60s for server process to exit")
     freed = False
     for i in range(60):
-        print(f"[DEBUG] Check free attempt {i+1}")
-        grep_res = await asyncio.to_thread(
-            subprocess.run,
-            "ss -tuln | grep -q ':7777'",
-            shell=True
-        )
-        if grep_res.returncode != 0:
+        print(f"[DEBUG] Check stop attempt {i+1}")
+        # Check if the server process has exited
+        if not is_scpsl_process_running():
             freed = True
-            print(f"[DEBUG] Port 7777 is free on attempt {i+1}")
+            print(f"[DEBUG] Server process exited on attempt {i+1}")
             break
         await asyncio.sleep(1)
     if freed:
-        await interaction.edit_original_response(content="Server stopped successfully: port 7777 is free.")
+        await interaction.edit_original_response(content="Server stopped successfully: process is not running.")
     else:
-        await interaction.edit_original_response(content="Server stop timed out: port 7777 still bound after 60 seconds.")
+        await interaction.edit_original_response(content="Server stop timed out: process still running after 60 seconds.")
 
 # Set server state command
 @tree.command(name='setserverstate', description='Set server to private or public mode')
@@ -518,7 +515,7 @@ async def setserverstate(interaction: discord.Interaction, state: app_commands.C
     )
     if has_res.returncode != 0:
         await interaction.response.send_message(
-            "Server is not running; please start the server first."
+            "Server is not running; please start the server first.", ephemeral=True
         )
         return
     # Defer response to allow editing later
@@ -588,7 +585,7 @@ async def restartnextround(interaction: discord.Interaction):
         return
     # Acknowledge scheduling
     await interaction.response.send_message(
-        "Scheduling server restart after next round..."
+        "Scheduling server restart after next round...", ephemeral=True
     )
     # Send restart next round command to tmux
     await asyncio.to_thread(
@@ -625,7 +622,7 @@ async def roundrestart(interaction: discord.Interaction):
         await interaction.response.send_message("Server is not running; please start the server first.")
         return
     # Acknowledge
-    await interaction.response.send_message("Forcing round restart...")
+    await interaction.response.send_message("Forcing round restart...", ephemeral=True)
     # Send round restart command
     await asyncio.to_thread(
         subprocess.run,
@@ -658,7 +655,7 @@ async def softrestart(interaction: discord.Interaction):
         )
         return
     # Acknowledge action
-    await interaction.response.send_message("Soft restarting server, please wait...")
+    await interaction.response.send_message("Soft restarting server, please wait...", ephemeral=True)
     # Send soft restart command to tmux
     await asyncio.to_thread(
         subprocess.run,
@@ -721,18 +718,42 @@ async def fetchlogs(interaction: discord.Interaction):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         raw = capture_res.stdout.decode().replace('\r', '')
+        # Mask out IPv4 and IPv6 addresses except the server IP announcement
+        ip_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4}"
+        lines = raw.splitlines(True)
+        new_lines = []
+        for line in lines:
+            # preserve server IP announcement line
+            if "Your server IP address is " in line:
+                new_lines.append(line)
+                continue
+            # preserve timestamp bracketed prefix
+            if line.startswith('[') and ']' in line:
+                idx = line.index(']') + 1
+                prefix, body = line[:idx], line[idx:]
+                new_lines.append(prefix + re.sub(ip_pattern, 'XXX.XXX.XXX.XXX', body))
+            else:
+                new_lines.append(re.sub(ip_pattern, 'XXX.XXX.XXX.XXX', line))
+        masked = ''.join(new_lines)
         # Truncate inline snippet to fit within 2000-char limit including code fences
         fence = '```'
+        # max characters inside code fences (2000 total limit minus fence overhead)
         max_inner = 2000 - (len(fence) * 2)
-        snippet = raw[-max_inner:] if len(raw) > max_inner else raw
-        full_logs = raw[-10000:] if len(raw) > 100000 else raw
+        snippet = masked[-max_inner:] if len(masked) > max_inner else masked
+        full_logs = masked[-10000:] if len(masked) > 100000 else masked
         # Send inline snippet
         await interaction.followup.send(f"{fence}{snippet}{fence}", ephemeral=True)
-        # Send full logs as file
-        buf = io.BytesIO(full_logs.encode())
+        # Write full logs to a temporary file, send it, then delete
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmpfile:
+            tmpfile.write(full_logs.encode())
+            tmpfile.flush()
+        tmp_path = tmpfile.name
         await interaction.followup.send(
-            file=discord.File(buf, filename="scpsl_logs.txt"), ephemeral=True
+            file=discord.File(tmp_path, filename="scpsl_logs.txt"), ephemeral=True
         )
+        # Remove the temporary file after sending
+        os.remove(tmp_path)
+        
     except Exception as e:
         import traceback
         traceback.print_exception(type(e), e, e.__traceback__)
@@ -957,7 +978,8 @@ async def systemreboot(interaction: discord.Interaction):
     view = SystemRebootView(interaction.user.id)
     await interaction.response.send_message(
         "⚠️ Are you sure you want to reboot the system? This will shutdown SCP:SL and reboot the host.",
-        view=view
+        view=view,
+        ephemeral=True
     )
 
 # Start the bot
