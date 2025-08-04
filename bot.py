@@ -273,9 +273,12 @@ async def update_status():
         # Find all player count lines and pick the last one for current count
         lines = cleaned.splitlines()
         count_lines = [ln for ln in lines if 'List of players' in ln]
-        logger.info(f"[DEBUG] tmux count lines: {count_lines}")
+        # Only log the most recent count line
         if count_lines:
             last_line = count_lines[-1]
+            logger.info(f"[DEBUG] tmux latest count line: {last_line}")
+        if count_lines:
+            # Reuse last_line from above
             m = re.search(r'List of players \((\d+)\)', last_line)
             count = int(m.group(1)) if m else 0
         else:
@@ -300,8 +303,9 @@ async def update_status():
         embed = discord.Embed(title="Server is currently offline", color=0xff0000)
     else:
         embed = discord.Embed(title="Current Players", description=status_text, color=0x007bff)
-    embed.set_footer(text="Updated")
+    embed.set_footer(text="Last Updated")
     embed.timestamp = datetime.now(timezone.utc)
+    embed.set_author(name="Server Name Player Count")
     # Send or edit embed in status channel
     if messages:
         await messages[0].edit(embed=embed)
