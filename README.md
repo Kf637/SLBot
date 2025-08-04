@@ -22,7 +22,7 @@
 
 1. Clone or copy the repository:
    ```bash
-   git clone https://github.com/Kf637/SLBot.git
+   git clone https://github.com/your-repo/SLBot.git
    cd SLBot
    ```
 2. Create a virtual environment (recommended):
@@ -38,22 +38,18 @@
 ## Configuration
 
 1. Copy the environment file and fill in your credentials:
-   ```bash
-   cp .env .env.local
-   ```
-   Edit `.env.local` and set:
+   
+   Edit `.env`:
    ```ini
    DISCORD_TOKEN=YOUR_DISCORD_BOT_TOKEN
    GUILD_ID=YOUR_DISCORD_SERVER_ID
    WEBHOOK_URL=YOUR_WEBHOOK_URL  # optional
-   DISABLE_CONSOLE=false
-   DISABLE_FETCHLOGS=false
-   DISABLE_CONSOLE=false
-   DISABLE_FETCHLOGS=false
-   DISABLE_COMMANDS_USAGE_LOGGING=false
    ```
    **Note:** If `DISABLE_CONSOLE` or `DISABLE_FETCHLOGS` are not defined in your `.env`, those commands will be disabled by default. To enable them, add the following lines to your environment file:
-
+   ```ini
+   DISABLE_CONSOLE=false
+   DISABLE_FETCHLOGS=false
+   ```
 2. Update `permission.json` with the Discord role IDs authorized for each command. Example:
    ```json
    {
@@ -70,7 +66,34 @@ Run the bot with:
 python bot.py
 ```
 
-On startup, the bot will register slash commands in the configured guild. Once online, use `/help` in Discord to see available commands.
+### Running as a systemd service
+
+To run SLBot as a background service, create a systemd unit file at `/etc/systemd/system/slbot.service` with your bot path:
+
+```ini
+[Unit]
+Description=SLBot Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /path/to/SLBot/bot.py
+ExecStop=/usr/bin/pkill -f '/path/to/SLBot/bot.py'
+KillMode=process
+TimeoutStopSec=10s
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then reload and start the service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable slbot.service
+sudo systemctl start slbot.service
+sudo systemctl status slbot.service
+```
 
 ## Notes
 
