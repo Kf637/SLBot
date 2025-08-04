@@ -30,8 +30,17 @@ disable_fetchlogs = os.getenv('DISABLE_FETCHLOGS', 'true') == 'true'
 disable_commands_usage_logging = os.getenv('DISABLE_COMMANDS_USAGE_LOGGING', 'true') == 'true'
 # Toggle to disable Discord player status updates (set to 'true' to disable)
 disable_player_update = os.getenv('DISABLE_DISCORD_PLAYERUPDATE', 'false').lower() == 'true'
-# Environment variable for status embed channel ID; fall back to default
-STATUS_CHANNEL_ID = int(os.getenv('PLAYER_UPDATE_CHANNEL_ID', '1392522926758035588'))
+# Environment variable for status embed channel ID
+status_var = os.getenv('STATUS_CHANNEL_ID')
+if not status_var:
+    # Only require STATUS_CHANNEL_ID if player updates are enabled
+    if not disable_player_update:
+        logger.error("Missing required environment variable: STATUS_CHANNEL_ID\nIf you don't need player updates, set DISABLE_DISCORD_PLAYERUPDATE to 'true' in your .env file.")
+        sys.exit(1)
+    # Player updates disabled, no channel needed
+    STATUS_CHANNEL_ID = None
+else:
+    STATUS_CHANNEL_ID = int(status_var)
 
 # Set up intents for slash commands only
 intents = discord.Intents.default()
@@ -46,6 +55,8 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger(__name__)
+command_logger = logging.getLogger('commandsusage')
+command_logger.setLevel(logging.INFO)
 
 # Setup commands usage logging if not disabled
 if not disable_commands_usage_logging:
@@ -59,8 +70,8 @@ if not disable_commands_usage_logging:
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] %(name)s: %(message)s'))
-    # Attach to root logger so all info logs go to file
-    logging.getLogger().addHandler(file_handler)
+    # Attach handler to command_logger so only command usage entries are recorded
+    command_logger.addHandler(file_handler)
 else:
     logger.info('Commands usage logging is disabled.')
 
@@ -201,8 +212,8 @@ async def log_command(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"Failed to send command log webhook: {e}")
     
-    # Also log to file
-    logger.info("Command used: %s by %s (%s); Roles: %s", cmd_name, user.name, user.id, role_str)
+    # Also log to file via dedicated command_logger
+    command_logger.info("Command used: %s by %s (%s); Roles: %s", cmd_name, user.name, user.id, role_str)
 
 async def log_denied(interaction: discord.Interaction):
     """Log unauthorized attempts to webhook"""
@@ -284,33 +295,50 @@ async def update_status():
         else:
             count = 0
         logger.info(f"[DEBUG] Player count: {count}")
-        status_text = f"{count}/25 Players"
-    else:
-        status_text = "Server offline"
-    logger.info(f"[DEBUG] update_status: status_text='{status_text}'")
-    # Update presence
-    await client.change_presence(
-        status=discord.Status.online,
-        activity=discord.Activity(type=discord.ActivityType.watching, name=status_text)
-    )
-    # Update or send embed in status channel
-    channel = client.get_channel(STATUS_CHANNEL_ID) or await client.fetch_channel(STATUS_CHANNEL_ID)
-    messages = [msg async for msg in channel.history(limit=100) if msg.author == client.user]
-    for msg in messages[1:]:
-        await msg.delete()
-    # Create embed with title, description, footer, and timestamp
-    if status_text == "Server offline":
-        embed = discord.Embed(title="Server is currently offline", color=0xff0000)
-    else:
-        embed = discord.Embed(title="Current Players", description=status_text, color=0x007bff)
-    embed.set_footer(text="Last Updated")
-    embed.timestamp = datetime.now(timezone.utc)
-    embed.set_author(name="Server Name Player Count")
-    # Send or edit embed in status channel
-    if messages:
-        await messages[0].edit(embed=embed)
-    else:
-        await channel.send(embed=embed)
+        # prepare status and embed parameters
+        if count is not None:
+            status_str = f"{count}/25 Players"
+            color = 0x007bff if count > 0 else 0xffffff
+            title = None
+        else:
+            status_str = "Server offline"
+            color = 0xff0000
+            title = "Server is currently offline"
+
+        logger.info(f"[DEBUG] update_status: status='{status_str}'")
+
+        # update bot presence
+        await client.change_presence(
+            status=discord.Status.online,
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name=status_str
+            )
+        )
+
+        # fetch channel and keep only the most recent bot message
+        channel = client.get_channel(STATUS_CHANNEL_ID) or await client.fetch_channel(STATUS_CHANNEL_ID)
+        recent = [msg async for msg in channel.history(limit=1) if msg.author == client.user]
+        # delete any older bot messages beyond the first
+        async for old in channel.history(limit=100):
+            if old.author == client.user and (not recent or old.id != recent[0].id):
+                await old.delete()
+
+        # build embed
+        if title:
+            embed = discord.Embed(title=title, color=color)
+        else:
+            embed = discord.Embed(description=f"**{status_str}**", color=color)
+
+        embed.set_author(name="Server Name Player Count")
+        embed.set_footer(text="Last Updated")
+        embed.timestamp = datetime.now(timezone.utc)
+
+        # edit the existing message or send a new one
+        if recent:
+            await recent[0].edit(embed=embed)
+        else:
+            await channel.send(embed=embed)
 
 @tree.command(name='help', description='Displays a list of available bot commands')
 async def help_command(interaction: discord.Interaction):
