@@ -976,19 +976,71 @@ async def onlineplayers(interaction: discord.Interaction):
         for entry in lines[start:]:
             if not entry.strip():
                 break
-            # Strip leading timestamp and dash, but preserve leading underscores/dots in username
+            # Strip leading timestamp and dash
             clean = re.sub(r'^\[.*?\]\s*-\s*', '', entry)
-            clean = re.sub(r'^- (?![._])', '', clean)
-            players.append(clean.rstrip())
+            # Remove any leading hyphens or spaces uniformly
+            clean = clean.lstrip('- ').rstrip()
+            players.append(clean)
         
         # Deduplicate while preserving order
         players = list(dict.fromkeys(players))
         
-        # Format response
-        player_list = '\n'.join(f"• {player}" for player in players)
-        content = f'👥 **Online players ({count}):**\n{player_list}'
-        
-        await interaction.edit_original_response(content=content)
+        # Format list and paginate if too long
+        lines = [f"• {player}" for player in players]
+        # Build pages with max 1500 chars each
+        pages = []
+        current = ""
+        for line in lines:
+            if len(current) + len(line) + 1 > 1500:
+                pages.append(current)
+                current = ""
+            current += line + "\n"
+        if current:
+            pages.append(current)
+
+        if len(pages) == 1:
+            # Single page, send as plain content
+            content = f'👥 **Online players ({count}):**\n{pages[0]}'
+            await interaction.edit_original_response(content=content)
+        else:
+            # Multi-page embed view
+            embeds = []
+            total = len(pages)
+            for idx, page in enumerate(pages, start=1):
+                embed = discord.Embed(
+                    title=f"👥 Online players ({count}) - Page {idx}/{total}",
+                    description=page,
+                    color=0x007bff
+                )
+                embeds.append(embed)
+
+            class PlayerPages(discord.ui.View):
+                def __init__(self, author_id):
+                    super().__init__(timeout=60)
+                    self.page = 0
+                    self.author_id = author_id
+                    self.previous.disabled = True
+
+                @discord.ui.button(label='◀️ Previous', style=discord.ButtonStyle.secondary)
+                async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if interaction.user.id != self.author_id:
+                        return await interaction.response.send_message("This button isn't for you.", ephemeral=True)
+                    self.page = max(0, self.page - 1)
+                    button.disabled = (self.page == 0)
+                    self.next.disabled = False
+                    await interaction.response.edit_message(embed=embeds[self.page], view=self)
+
+                @discord.ui.button(label='Next ▶️', style=discord.ButtonStyle.primary)
+                async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if interaction.user.id != self.author_id:
+                        return await interaction.response.send_message("This button isn't for you.", ephemeral=True)
+                    self.page = min(total - 1, self.page + 1)
+                    button.disabled = (self.page == total - 1)
+                    self.previous.disabled = False
+                    await interaction.response.edit_message(embed=embeds[self.page], view=self)
+
+            view = PlayerPages(interaction.user.id)
+            await interaction.edit_original_response(embed=embeds[0], view=view)
         
     except Exception as e:
         import traceback
