@@ -999,9 +999,13 @@ async def onlineplayers(interaction: discord.Interaction):
             pages.append(current)
 
         if len(pages) == 1:
-            # Single page, send as plain content
-            content = f'👥 **Online players ({count}):**\n{pages[0]}'
-            await interaction.edit_original_response(content=content)
+            # Single page, send as embed without buttons
+            embed = discord.Embed(
+                title=f"👥 Online players ({count})",
+                description=pages[0],
+                color=0x007bff
+            )
+            await interaction.edit_original_response(embed=embed)
         else:
             # Multi-page embed view
             embeds = []
