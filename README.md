@@ -95,6 +95,42 @@ sudo systemctl start slbot.service
 sudo systemctl status slbot.service
 ```
 
+## Commands Usage
+
+### Console
+
+![Console](.github/images/console1.png)
+![Console](.github/images/console2.png)
+
+### Onlineplayers
+
+![Onlineplayers](.github/images/onlineplayers.png)
+![Onlineplayers](.github/images/onlineplayers2.png)
+
+### Softrestart
+
+![Softrestart](.github/images/softrestart.png)
+
+### Systemreboot
+
+![Systemreboot](.github/images/systemreboot.png)
+![Systemreboot](.github/images/systemreboot2.png)
+![Systemreboot](.github/images/systemreboot3.png)
+
+### Startserver
+
+![Startserver](.github/images/startserver.png)
+
+### Stopserver
+
+![Stopserver](.github/images/stopserver.png)
+![Stopserver](.github/images/stopserver2.png)
+
+### Fetchlogs
+
+![Fetchlogs](.github/images/fetchlogs.png)
+![Fetchlogs](.github/images/fetchlogs2.png)
+![Fetchlogs](.github/images/fetchlogs3.png)
 ## Notes
 
 - Ensure the bot has the `applications.commands` and `bot` scope in your Discord application settings.
