@@ -14,7 +14,7 @@ import json
 import sys
 import logging
 import tempfile  # for creating temporary log file
-from discord.ext import tasks
+from discord.ext import tasks, commands
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -45,8 +45,16 @@ else:
 # Set up intents for slash commands only
 intents = discord.Intents.default()
 intents.message_content = False  # Not needed for slash commands
-client = discord.Client(intents=intents)
-tree = discord.app_commands.CommandTree(client)
+# Subclass commands.Bot to register cogs in setup_hook
+class SLBot(commands.Bot):
+    async def setup_hook(self):
+        # Register usage logger cog during setup
+        await super().setup_hook()
+        await self.add_cog(UsageLogger(self))
+
+# Initialize Bot instance
+bot = SLBot(command_prefix=None, intents=intents)
+tree = bot.tree
 
 # Configure logging to match discord.py style and ensure early messages appear
 logging.basicConfig(
@@ -55,6 +63,7 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger(__name__)
+# Webhook URL enforcement removed; assume HTTPS from configuration
 command_logger = logging.getLogger('commandsusage')
 command_logger.setLevel(logging.INFO)
 
@@ -144,7 +153,120 @@ def handle_loop_exception(loop, context):
 loop.set_exception_handler(handle_loop_exception)
 
 # Global error handler for events
-@client.event
+@bot.event
+async def on_error(event, *args, **kwargs):
+    import traceback
+    logger.error(f"Error in event handler {event}:")
+    traceback.print_exc()
+
+# Central helper to run tmux/subprocess commands asynchronously
+async def run_tmux_command(cmd: list[str]) -> str:
+    """Execute a tmux or shell command and return stdout as decoded string."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run, cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30
+        )
+        return result.stdout.decode(errors='ignore')
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command {{' '.join(cmd)}} timed out: {e}")
+        return ""
+
+# Decorator for permission checks
+def require_permission(cmd_name: str):
+    def decorator(func):
+        async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+            if not has_permission(interaction.user, cmd_name):
+                await log_denied(interaction)
+                return await interaction.response.send_message(
+                    "You don't have permission to use this command.", ephemeral=True
+                )
+            return await func(interaction, *args, **kwargs)
+        return wrapper
+    return decorator
+
+# Cog for automatic command usage logging
+class UsageLogger(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_application_command(self, interaction: discord.Interaction):
+        # Log every slash command invocation
+        await log_command(interaction)
+
+
+# Prevent duplicate logs from discord.py by clearing its default handlers
+discord_logger = logging.getLogger('discord')
+discord_logger.handlers.clear()
+# Raise discord logger level to WARNING to avoid duplicate INFO messages
+discord_logger.setLevel(logging.WARNING)
+# Prevent discord logger messages from propagating to root logger
+discord_logger.propagate = False
+
+# Validate required environment variables
+_required = {
+    "DISCORD_TOKEN": TOKEN,
+    "GUILD_ID": GUILD_ID,
+}
+_missing = [name for name, val in _required.items() if not val]
+if _missing:
+    logger.error("Missing required environment variable(s): %s", ", ".join(_missing))
+    sys.exit(1)
+
+# Warn about disabled or unset optional features
+if not WEBHOOK_URL:
+    logger.warning("WEBHOOK_URL not set; command logging disabled.")
+
+# Log feature flag states
+if disable_console:
+    logger.info("Console command is disabled.")
+else:
+    logger.info("Console command is enabled.")
+
+if disable_fetchlogs:
+    logger.info("Fetchlog command is disabled.")
+else:
+    logger.info("Fetchlog command is enabled.")
+
+# Log player update feature flag state
+if disable_player_update:
+    logger.info("Discord player status updates are disabled.")
+else:
+    logger.info("Discord player status updates are enabled.")
+
+try:
+    perms_path = os.path.join(os.path.dirname(__file__), 'permission.json')
+    with open(perms_path, 'r') as f:
+        # Load mapping of command names to list of allowed role IDs
+        COMMAND_PERMISSIONS = json.load(f)
+except Exception as e:
+    # Fallback to empty permissions on error
+    COMMAND_PERMISSIONS = {}
+    logger.error(f"Error loading permissions: {e}")
+
+def has_permission(member: discord.Member, cmd_name: str) -> bool:
+    """Check if member has roles allowed for this command"""
+    allowed = COMMAND_PERMISSIONS.get(cmd_name, [])
+    return isinstance(member, discord.Member) and any(r.id in allowed for r in member.roles)
+
+# Catch unhandled exceptions in asyncio event loop
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+def handle_loop_exception(loop, context):
+    import traceback
+    logger.error("Uncaught exception in asyncio loop: %s", context)
+    traceback.print_exc()
+
+loop.set_exception_handler(handle_loop_exception)
+
+# Global error handler for events
+@bot.event
 async def on_error(event, *args, **kwargs):
     import traceback
     logger.error(f"Error in event handler {event}:")
@@ -208,7 +330,8 @@ async def log_command(interaction: discord.Interaction):
     payload = {"embeds": [embed]}
     
     try:
-        await asyncio.to_thread(requests.post, WEBHOOK_URL, json=payload)
+        # HTTP webhook call with timeout to prevent hanging
+        await asyncio.to_thread(lambda: requests.post(WEBHOOK_URL, json=payload, timeout=5))
     except Exception as e:
         logger.error(f"Failed to send command log webhook: {e}")
     
@@ -240,13 +363,14 @@ async def log_denied(interaction: discord.Interaction):
     payload = {"embeds": [embed]}
     
     try:
-        await asyncio.to_thread(requests.post, WEBHOOK_URL, json=payload)
+        # HTTP webhook call with timeout to prevent hanging
+        await asyncio.to_thread(lambda: requests.post(WEBHOOK_URL, json=payload, timeout=5))
     except Exception as e:
         logger.error(f"Failed to send denied log webhook: {e}")
 
-@client.event
+@bot.event
 async def on_ready():
-    logger.info(f'Logged in as {client.user} (ID: {client.user.id})')
+    logger.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
     
     # Sync slash commands
     if GUILD:
@@ -268,7 +392,7 @@ async def on_ready():
 # Get player amount and put it in the status loop
 @tasks.loop(seconds=120)
 async def update_status():
-    await client.wait_until_ready()
+    await bot.wait_until_ready()
     # Check if server process is running and fetch output
     if is_scpsl_process_running():
         # Send 'players' and capture the pane in one login shell to preserve session
@@ -308,7 +432,7 @@ async def update_status():
         logger.info(f"[DEBUG] update_status: status='{status_str}'")
 
         # update bot presence
-        await client.change_presence(
+        await bot.change_presence(
             status=discord.Status.online,
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
@@ -317,11 +441,11 @@ async def update_status():
         )
 
         # fetch channel and keep only the most recent bot message
-        channel = client.get_channel(STATUS_CHANNEL_ID) or await client.fetch_channel(STATUS_CHANNEL_ID)
-        recent = [msg async for msg in channel.history(limit=1) if msg.author == client.user]
+        channel = bot.get_channel(STATUS_CHANNEL_ID) or await bot.fetch_channel(STATUS_CHANNEL_ID)
+        recent = [msg async for msg in channel.history(limit=1) if msg.author == bot.user]
         # delete any older bot messages beyond the first
         async for old in channel.history(limit=100):
-            if old.author == client.user and (not recent or old.id != recent[0].id):
+            if old.author == bot.user and (not recent or old.id != recent[0].id):
                 await old.delete()
 
         # build embed
@@ -330,7 +454,7 @@ async def update_status():
         else:
             embed = discord.Embed(description=f"**{status_str}**", color=color)
 
-        embed.set_author(name="Server Name Player Count")
+        embed.set_author(name="The Dungeon Player Count")
         embed.set_footer(text="Last Updated")
         embed.timestamp = datetime.now(timezone.utc)
 
@@ -467,21 +591,29 @@ async def restartserver(interaction: discord.Interaction):
             ["sudo", "-i", "-u", "steam", "tmux", "new-session", "-d", "-s", "scpsl", "bash", "-c", "cd /home/steam/steamcmd/scpsl && ./LocalAdmin 7777"]
         )
         
-        # Step 4: Poll for readiness via process
-        await interaction.edit_original_response(content="⏳ Waiting for server to start...")
-        started = False
-        for _ in range(60):
-            if is_scpsl_process_running():
-                started = True
+        # Step 4: Poll tmux console for 'Waiting for players' confirmation
+        await interaction.edit_original_response(content="⏳ Waiting for players to join (checking tmux console)...")
+        confirmed = False
+        for i in range(60):
+            capture = await asyncio.to_thread(
+                subprocess.run,
+                ["sudo", "-u", "steam", "-H", "tmux", "capture-pane", "-pt", "scpsl", "-S", "-100", "-J"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            output = capture.stdout.decode(errors='ignore')
+            if "Waiting for players" in output:
+                confirmed = True
+                logger.info(f"'Waiting for players' detected on attempt {i+1}")
                 break
             await asyncio.sleep(1)
 
-        if started:
-            await interaction.edit_original_response(content="✅ Server restarted successfully!")
-            logger.info("Server restarted successfully: SCPSL process is running.")
+        if confirmed:
+            await interaction.edit_original_response(content="✅ Server restarted and ready for players!")
+            logger.info("Server restarted successfully: 'Waiting for players' detected in tmux console.")
         else:
-            await interaction.edit_original_response(content="⚠️ Server restart timed out. Please check the server logs.")
-            logger.warning("Server restart timed out: SCPSL process not detected after 60 seconds.")
+            await interaction.edit_original_response(content="⚠️ Server restart timed out: no 'Waiting for players' log detected.")
+            logger.warning("Server restart timed out: no 'Waiting for players' log detected after 60 seconds.")
     
     except Exception as e:
         import traceback
@@ -525,21 +657,29 @@ async def startserver(interaction: discord.Interaction):
         stderr=subprocess.PIPE
     )
     
-    # Wait up to 60 seconds for the server process to start
+    # Poll tmux console for 'Waiting for players' confirmation
     await interaction.edit_original_response(content="⏳ Starting server, please wait...")
-    started = False
+    confirmed = False
     for i in range(60):
-        if is_scpsl_process_running():
-            started = True
-            logger.info(f"SCPSL process detected on attempt {i+1}")
+        # Capture last 100 lines from tmux pane
+        capture = await asyncio.to_thread(
+            subprocess.run,
+            ["sudo", "-u", "steam", "-H", "tmux", "capture-pane", "-pt", "scpsl", "-S", "-100", "-J"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        output = capture.stdout.decode(errors='ignore')
+        if "Waiting for players" in output:
+            confirmed = True
+            logger.info(f"'Waiting for players' detected on attempt {i+1}")
             break
         await asyncio.sleep(1)
 
-    if started:
-        logger.info("Server started successfully")
-        await interaction.edit_original_response(content="✅ Server started successfully!")
+    if confirmed:
+        logger.info("Game service started: 'Waiting for players' detected")
+        await interaction.edit_original_response(content="✅ Server started and ready for players!")
     else:
-        logger.warning("Server start timed out")
+        logger.warning("Server start timed out: no ready signal received")
         await interaction.edit_original_response(content="⚠️ Server start timed out. Please check the logs.")
 
 @tree.command(name='stopserver', description='Stops the SCP:SL server')
@@ -969,18 +1109,22 @@ async def onlineplayers(interaction: discord.Interaction):
         if count == 0:
             await interaction.edit_original_response(content='👥 **No players online** (0)')
             return
-        
-        # Extract players from the most recent header
+
+        # Extract only valid player entries from after the header
         players = []
         start = idxs[-1] + 1
         for entry in lines[start:]:
+            # Skip blank lines
             if not entry.strip():
-                break
-            # Strip leading timestamp and dash
-            clean = re.sub(r'^\[.*?\]\s*-\s*', '', entry)
-            # Remove any leading hyphens or spaces uniformly
-            clean = clean.lstrip('- ').rstrip()
-            players.append(clean)
+                continue
+            # Strip leading timestamp and dash, then trim
+            clean = re.sub(r'^\[.*?\]\s*-\s*', '', entry).lstrip('- ').rstrip()
+            # Include only lines with a player@server and numeric ID in brackets
+            if '@' in clean and re.search(r'\[\d+\]', clean):
+                players.append(clean)
+                # Stop once we've collected the expected number of players
+                if len(players) >= count:
+                    break
         
         # Deduplicate while preserving order
         players = list(dict.fromkeys(players))
@@ -1192,7 +1336,7 @@ async def systemreboot(interaction: discord.Interaction):
             await button_interaction.edit_original_response(content="🔄 Rebooting system... Bot will go offline.")
             
             # Make bot appear offline before reboot
-            await client.change_presence(status=discord.Status.invisible)
+            await bot.change_presence(status=discord.Status.invisible)
             await asyncio.to_thread(subprocess.run, ["sudo", "reboot"])
         
         @discord.ui.button(label='❌ Cancel', style=discord.ButtonStyle.secondary)
@@ -1239,4 +1383,4 @@ async def on_app_command_error(interaction: discord.Interaction, error):
 # Start the bot
 if __name__ == '__main__':
     logger.info("Starting Discord bot with slash commands only...")
-    client.run(TOKEN)
+    bot.run(TOKEN)
