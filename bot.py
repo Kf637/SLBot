@@ -2,6 +2,7 @@ import os
 import discord
 from discord import app_commands
 from dotenv import load_dotenv, find_dotenv
+import ipaddress  # for strict IP validation
 import subprocess
 import asyncio
 import socket
@@ -321,10 +322,14 @@ async def log_command(interaction: discord.Interaction):
         "title": "Command Used",
         "color": 0x00ff00,
         "fields": [
-            {"name": "User", "value": f"{user} ({user.id})", "inline": True},
+            {"name": "User", "value": f"<@{user.id}> ({user.id})", "inline": True},
             {"name": "Command", "value": cmd_name, "inline": True},
             {"name": "Access Granted By Role", "value": role_str, "inline": True}
         ],
+        "author": {
+            "name": str(user),
+            "icon_url": str(user.avatar.url) if user.avatar else None
+        },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     payload = {"embeds": [embed]}
@@ -341,6 +346,7 @@ async def log_command(interaction: discord.Interaction):
 async def log_denied(interaction: discord.Interaction):
     """Log unauthorized attempts to webhook"""
     if not WEBHOOK_URL:
+        logger.warning("WEBHOOK_URL not set; cannot log unauthorized attempts.\nPlease set it in your .env file.")
         return
     
     user = interaction.user
@@ -354,10 +360,14 @@ async def log_denied(interaction: discord.Interaction):
         "title": "Unauthorized Attempt",
         "color": 0xff0000,
         "fields": [
-            {"name": "User", "value": f"{user} ({user.id})", "inline": True},
+            {"name": "User", "value": f"<@{user.id}> ({user.id})", "inline": True},
             {"name": "Command", "value": cmd_name, "inline": True},
             {"name": "User Roles", "value": role_str, "inline": True}
         ],
+        "author": {
+            "name": str(user),
+            "icon_url": str(user.avatar.url) if user.avatar else None
+        },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     payload = {"embeds": [embed]}
@@ -551,7 +561,7 @@ async def help_command(interaction: discord.Interaction):
 
 @tree.command(name='restartserver', description='Restarts the SCP:SL server')
 async def restartserver(interaction: discord.Interaction):
-    """Stops and starts the tmux session for SCP:SL and verifies port binding"""
+    """Stops and starts the tmux session for SCP:SL"""
     member = interaction.user
     if not has_permission(member, interaction.command.name):
         await log_denied(interaction)
@@ -583,16 +593,23 @@ async def restartserver(interaction: discord.Interaction):
                 break
             await asyncio.sleep(1)
         
-        # Step 3: Starting server
-        await asyncio.sleep(3)
-        await interaction.edit_original_response(content="🚀 Starting SCP:SL Server...")
         await asyncio.to_thread(
             subprocess.run,
             ["sudo", "-i", "-u", "steam", "tmux", "new-session", "-d", "-s", "scpsl", "bash", "-c", "cd /home/steam/steamcmd/scpsl && ./LocalAdmin 7777"]
         )
+
+        # Step 3: Use is_scpsl_process_running to verify that the process is running
+        await asyncio.sleep(2)  # Give it a moment to start up
+        if is_scpsl_process_running():
+            logger.info("tmux session 'scpsl' started successfully")
+            await interaction.edit_original_response(content="🚀 SCP:SL Process started, waiting for signal...")
+        else:
+            logger.error("Failed to start tmux session 'scpsl'; process not running")
+            await interaction.edit_original_response(content="⚠️ Failed to start SCP:SL Process.")
+            return
         
         # Step 4: Poll tmux console for 'Waiting for players' confirmation
-        await interaction.edit_original_response(content="⏳ Waiting for players to join (checking tmux console)...")
+        await interaction.edit_original_response(content="⏳ Waiting for ready signal from SCP:SL...")
         confirmed = False
         for i in range(60):
             capture = await asyncio.to_thread(
@@ -609,10 +626,10 @@ async def restartserver(interaction: discord.Interaction):
             await asyncio.sleep(1)
 
         if confirmed:
-            await interaction.edit_original_response(content="✅ Server restarted and ready for players!")
+            await interaction.edit_original_response(content="✅ Server restarted successfully!")
             logger.info("Server restarted successfully: 'Waiting for players' detected in tmux console.")
         else:
-            await interaction.edit_original_response(content="⚠️ Server restart timed out: no 'Waiting for players' log detected.")
+            await interaction.edit_original_response(content="⚠️ Server restart timed out: no signal received.")
             logger.warning("Server restart timed out: no 'Waiting for players' log detected after 60 seconds.")
     
     except Exception as e:
@@ -639,12 +656,12 @@ async def startserver(interaction: discord.Interaction):
     
     # Prevent starting if server process already running
     if is_scpsl_process_running():
-        await interaction.response.send_message("⚠️ Server is already running; please stop or restart instead.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Server is already running.", ephemeral=True)
         return
     
     await interaction.response.defer(thinking=True, ephemeral=True)
     logger.info(f"User {member} ({member.id}) invoked startserver")
-    
+    await interaction.edit_original_response(content="⏳ Starting server, please wait...")
     # Start new tmux session with server
     logger.info("Starting new tmux session 'scpsl'")
     start_res = await asyncio.to_thread(
@@ -656,11 +673,20 @@ async def startserver(interaction: discord.Interaction):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    
+    # Use is_scpsl_process_running to verify that the process is running
+    await asyncio.sleep(2)  # Give it a moment to start up
+    if is_scpsl_process_running():
+        logger.info("tmux session 'scpsl' started successfully")
+        await interaction.edit_original_response(content="🚀 SCP:SL Process started, waiting for signal...")
+    else:
+        logger.error("Failed to start tmux session 'scpsl'; process not running")
+        await interaction.edit_original_response(content="⚠️ Failed to start SCP:SL Process.")
+        return
+
+
     # Poll tmux console for 'Waiting for players' confirmation
-    await interaction.edit_original_response(content="⏳ Starting server, please wait...")
     confirmed = False
-    for i in range(60):
+    for i in range(80):
         # Capture last 100 lines from tmux pane
         capture = await asyncio.to_thread(
             subprocess.run,
@@ -676,7 +702,7 @@ async def startserver(interaction: discord.Interaction):
         await asyncio.sleep(1)
 
     if confirmed:
-        logger.info("Game service started: 'Waiting for players' detected")
+        logger.info("Game service started: Ready signal received from SCPSL")
         await interaction.edit_original_response(content="✅ Server started and ready for players!")
     else:
         logger.warning("Server start timed out: no ready signal received")
@@ -948,7 +974,7 @@ async def softrestart(interaction: discord.Interaction):
 
 @tree.command(name='fetchlogs', description='Gets server console logs')
 async def fetchlogs(interaction: discord.Interaction):
-    """Fetch server console logs and send them as file"""
+    """Fetch server console logs and send them as file (maximum available lines)"""
     member = interaction.user
     
     if disable_fetchlogs:
@@ -978,70 +1004,74 @@ async def fetchlogs(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True, ephemeral=True)
     
     try:
-        # Capture last logs
+        # Capture entire scrollback (-S -) for maximum lines allowed by tmux history-limit
         capture_res = await asyncio.to_thread(
             subprocess.run,
-            ["sudo", "-u", "steam", "-H", "tmux", "capture-pane", "-pt", "scpsl", "-S", "-100000", "-J"],
+            ["sudo", "-u", "steam", "-H", "tmux", "capture-pane", "-pt", "scpsl", "-S", "-", "-J"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         raw = capture_res.stdout.decode().replace('\r', '')
         
-        # Mask out IPv4 and IPv6 addresses except the server IP announcement
-        ip_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4}"
-        lines = raw.splitlines(True)
-        new_lines = []
+        # Mask out IPv4 and IPv6 addresses WITHOUT over-matching unrelated hex/timestamp data
+        # Strategy: find candidate textual patterns then validate with ipaddress to ensure they're real IPs.
+        def mask_ip_addresses(text: str) -> str:
+            # IPv4 quick pattern; validate each candidate
+            ipv4_re = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+            # IPv6 candidate: require at least two colons and hex groups (prevents matching single timestamps or IDs)
+            ipv6_re = re.compile(r'(?<![A-Fa-f0-9:])(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4}(?![A-Fa-f0-9:])')
+
+            def repl_v4(m: re.Match) -> str:
+                ip = m.group(0)
+                try:
+                    ipaddress.IPv4Address(ip)
+                    return 'XXX.XXX.XXX.XXX'
+                except ipaddress.AddressValueError:
+                    return ip  # Not a valid IPv4 address; leave unchanged
+
+            def repl_v6(m: re.Match) -> str:
+                ip = m.group(0)
+                # Skip if it looks like a log prefix with only one colon (already filtered, but double safety)
+                if ip.count(':') < 2:
+                    return ip
+                try:
+                    ipaddress.IPv6Address(ip)
+                    return 'XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX'
+                except ipaddress.AddressValueError:
+                    return ip  # Leave unrelated text
+
+            text = ipv4_re.sub(repl_v4, text)
+            text = ipv6_re.sub(repl_v6, text)
+            return text
+
+        masked = mask_ip_addresses(raw)
         
-        for line in lines:
-            # Preserve server IP announcement line
-            if "Your server IP address is " in line:
-                new_lines.append(line)
-                continue
-            # Preserve timestamp bracketed prefix
-            if line.startswith('[') and ']' in line:
-                idx = line.index(']') + 1
-                prefix, body = line[:idx], line[idx:]
-                new_lines.append(prefix + re.sub(ip_pattern, 'XXX.XXX.XXX.XXX', body))
-            else:
-                new_lines.append(re.sub(ip_pattern, 'XXX.XXX.XXX.XXX', line))
-        
-        masked = ''.join(new_lines)
-        
-        # Truncate inline snippet to fit within 2000-char Discord message limit including code fences and prefix
+        # Prepare short inline snippet (last portion) within 2000 char limit
         fence = '```'
         prefix_template = "📄 **Console Logs (last {} chars):**\n"
-        # Estimate prefix length using placeholder to account for dynamic digit length
         estimated_prefix_len = len(prefix_template.format(0))
-        # Compute max snippet length to fit within Discord limit
         max_inner = 2000 - estimated_prefix_len - len(fence) * 2
         max_inner = max(0, max_inner)
         snippet = masked[-max_inner:] if len(masked) > max_inner else masked
-        # Include entire masked logs in the full log file without truncation
-        full_logs = masked
         prefix = prefix_template.format(len(snippet))
-        # Send inline snippet within limits
-        # Ensure content does not exceed Discord's 2000-character limit
         content = f"{prefix}{fence}{snippet}{fence}"
         if len(content) > 2000:
-            # Trim snippet to fit under the limit
             over = len(content) - 2000
             snippet = snippet[over:]
             prefix = prefix_template.format(len(snippet))
             content = f"{prefix}{fence}{snippet}{fence}"
         await interaction.edit_original_response(content=content)
         
-        # Write full logs to a temporary file, send it, then delete
+        # Full logs file (maximum captured)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmpfile:
-            tmpfile.write(full_logs.encode())
+            tmpfile.write(masked.encode())
             tmpfile.flush()
+            tmp_path = tmpfile.name
         
-        tmp_path = tmpfile.name
         await interaction.followup.send(
-            content="📁 **Full logs file:**",
-            file=discord.File(tmp_path, filename="scpsl_logs.txt"), 
+            content="📁 **Full log file attached**",
+            file=discord.File(tmp_path, filename="scpsl_full_logs.txt"),
             ephemeral=True
         )
-        
-        # Remove the temporary file after sending
         os.remove(tmp_path)
         
     except Exception as e:
